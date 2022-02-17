@@ -369,6 +369,3 @@ getEvents = function(sample_1, sample_2, bin_names, chrs = 1:22) {
   return(event_comparison)
 
 }
-
-
-
