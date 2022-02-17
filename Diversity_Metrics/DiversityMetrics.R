@@ -338,3 +338,37 @@ get_diffLengths = function(cnTable, pairs, pp = 2, max_size = FALSE) {
     return(output)
     
 }
+
+#################################################
+# Pairwise events comparison, used for rebuttal #
+#################################################
+getEvents = function(sample_1, sample_2, bin_names, chrs = 1:22) {
+
+  # Run through the chromosomes
+  event_comparison = do.call(rbind, lapply(chrs, function(chr) {
+    
+    # Grep the chromosomes from QDNAseq formatted bin names
+    chr_ind = grep(paste0("^",chr,":"), bin_names)
+    
+    # Collapse call of pair into a string
+    runs = paste0(sample_1[chr_ind],"_",sample_2[chr_ind])
+    
+    # Collapse strings into runs
+    collapsed = rle(runs)
+    
+    # Calculate if the pair is a change
+    changed   = unlist(lapply(strsplit(as.character(collapsed$value), "_"), function(i) diff(as.numeric(i))!=0))
+    
+    # Collect the data to output
+    df = data.frame(chr = chr, len = collapsed$lengths, CNs = collapsed$value, Change = changed)
+    
+    return(df)
+    
+  }))
+
+  return(event_comparison)
+
+}
+
+
+
