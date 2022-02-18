@@ -8,24 +8,30 @@ library(circlize)
 # Plotting settings
 run_full_pipeline = TRUE
 
+# Source these helper scripts
 source("00_general_functions.R")
 source("00_runASCATlp.R")
 
+# Search across the ploidies
 ploid_search = seq(1.5,4,by=0.1)
+# Minimum purity for regions
 min_purity   = 0.5
 max_lrr      = Inf
 
+# Gather the sample names 
 blks = unlist(lapply(strsplit(list.files("cna_raw/segments"), "_"), function(i) i[2]))
 
+# Identify the 'bulk' samples
 impure_list = blks[grep("-B[0-9]$", blks)]
 
+# What are the patients?
 patients = unique(unlist(lapply(strsplit(list.files("cna_raw/segments"), split = "_"), 
                                 function(i) i[1])))
 
-patients = patients[!patients %in% "LM0041"]
-
+# Make a list to gather results per patient for ploidy
 per_patient_solution = list()
 
+# Run through the patients
 for(patient in patients) {
 
   # Find files
@@ -51,6 +57,7 @@ for(patient in patients) {
   # Gather here the chromosome position
   chr_pos = bins[[1]][,2:4]
   
+  # Search across the ploidies
   ploidy_mean_dist = lapply(ploid_search, function(pld) {
     
     output = list()
@@ -71,8 +78,10 @@ for(patient in patients) {
       
     }
     
+    # Normalise by ploidy
     mat = do.call(rbind, lapply(ascat, function(s) s$CN)) / pld
     
+    # Don't use anything more than 1
     mat = mat[,!apply(do.call(cbind, segs), 1, max) > 1]
     
     dists = as.vector(dist(mat))
@@ -93,19 +102,25 @@ for(patient in patients) {
   
   })
   
+  # Mean distances between samples
   inter_sample_dist = unlist(lapply(ploidy_mean_dist, function(i) mean(i$int_dists)))
+  # Mean within sample fits
   CN_solution_dist = unlist(lapply(ploidy_mean_dist, function(i) mean(i$sol_dists, na.rm=T)))
+  # Gather info and scale according to max and min
   df = data.frame(inter_sample = inter_sample_dist, in_sample = CN_solution_dist)
   df_scaled = data.frame(apply(df, 2, range01))
+  # How far are they from zero?
   dist_from_zero = apply(df_scaled, 1, function(x) dist(rbind(x, rep(0, times = 2))))
   ploidy_sol_index = which.min(dist_from_zero)
   
+  # Create plot to represent this process
   plt.df = df_scaled
   plt.df$Solution = FALSE
   plt.df$Solution[ploidy_sol_index] = TRUE
   
   cols = c("FALSE" = "black", "TRUE" = "red")
   
+  # Use ggplot to show that
   plt = ggplot(plt.df, aes(x = in_sample, y = inter_sample, col = Solution)) + geom_point() + 
     annotate("text", x = plt.df$in_sample, y = plt.df$inter_sample+0.03, label = ploid_search) + 
     scale_colour_manual(values = cols) +
@@ -118,21 +133,25 @@ for(patient in patients) {
 
   }
   
+  # This is our original answer
   searched_ploidy = ploid_search[ploidy_sol_index]
   
   # Take second option
   if(patient %in% c("LM0032", "LM0082")) {searched_ploidy = ploid_search[order(dist_from_zero)[2]]}
   
   if(run_full_pipeline) {
-  
+    
+    # Plot to show the search
     plot(ploid_search, unlist(lapply(ploidy_mean_dist, function(i) mean(i$int_dists))), type = "l",
          xlab = "Ploidy", ylab = "Mean Intersample Distance")
 
   }
   
+  # Ascat result for the answer
   ascat = lapply(segs, runASCATlp, fix_ploidy=searched_ploidy, 
                  min_purity=min_purity, max_lrr = max_lrr, no_fit_psit = 2)
   
+  # Manual adjustments
   for(s in paste0(sample_df$Block,sample_df$Region)) {
     
     if(s %in% c(impure_list, "FGR1")) {
@@ -175,6 +194,7 @@ for(patient in patients) {
   
     for(s in 1:length(ascat)) {
       
+      # Per sample fit assessment
       mean_dist = mean(ascat[[s]]$CN - ascat[[s]]$contCN)
       hist(ascat[[s]]$CN - ascat[[s]]$contCN, breaks = 100, xlim = c(-1,1), main = names(ascat)[s], xlab = "Distance")
       abline(v = mean_dist, lty = "dotted")
@@ -183,8 +203,10 @@ for(patient in patients) {
     
   }
   
+  # Which samples didn't have a solution?
   for(s in 1:length(ascat)) {if(nrow(ascat[[s]]$allsol)==0) {print(names(ascat)[s])}}
   
+  # Make it a matrix
   mat = do.call(rbind, lapply(ascat, function(s) s$CN))
   
   # Colour with saturation
@@ -232,9 +254,6 @@ for(patient in patients) {
     
   })
   
-  names(plts)   = names(ascat)
-  rownames(mat) = names(ascat)
-  
   if(run_full_pipeline) {
   
     lapply(1:length(ascat), function(i) {
@@ -253,7 +272,7 @@ for(patient in patients) {
     
   }
   
-  
+  # Collect for assessment at the end
   per_patient_solution[[patient]] = searched_ploidy
 
 }
