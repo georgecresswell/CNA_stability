@@ -1,7 +1,7 @@
 ---
 title: "Diversity measures"
 author: "George Cresswell"
-date: "10/02/2022"
+date: "25/01/2026"
 output: html_document
 ---
 
@@ -51,8 +51,11 @@ gradient  = -0.000355
 lower_int = 0.379
 upper_int = 0.485
 
+# y-label default
+y_label_distance = "Divergence"
+
 # Distance measure settings
-distance_params = list("Type" = "Alt_Status",
+distance_params = list("Type" = "MEDICC2", #MEDICC2 (not events, that's rle) or Alt_Status
                        "Use_altered_bins" = TRUE,
                        "Report_absolute" = FALSE,
                        "Normalise_by_bins" = FALSE)
@@ -68,6 +71,8 @@ if(!seg_size_filt %in% c("No_Size_Filter", "Large_Only", "Small_Only")) {stop("I
 # Plot dir
 if(distance_params$Type=="Alt_Status") {
     
+  y_label_distance = "Proportion of Aberrant Genome Subclonal"
+  
   if(distance_params$Report_absolute) {
     
     plot_dir = paste0(distance_params$Type,"_absolutebinsalt=",distance_params$Report_absolute,"/")
@@ -99,6 +104,14 @@ if(distance_params$Type=="Alt_Status") {
     plot_dir = paste0(distance_params$Type,"/")
   
 } else if(distance_params$Type=="Events") {
+  
+    y_label_distance = "rle Events"
+    plot_dir = paste0(distance_params$Type,"/")
+  
+} else if(distance_params$Type=="MEDICC2") {
+  
+    y_label_distance = "MEDICC2 events"
+    medicc2_analysis = read.csv("Pairwise_events_in_tree_LM_cohort.csv")
   
     plot_dir = paste0(distance_params$Type,"/")
   
@@ -218,7 +231,7 @@ clin_genomic$Organ[grep("lymph", clin_genomic$Organ)] = "Lymph"
 clin_genomic$Organ[clin_genomic$Organ %in% c("Peritoneum", "Ovary", "Omentum")] = "Peritoneum"
 
 # Split out the sample name
-clin_genomic$Block  = unlist(lapply(strsplit(clin_genomic$Sample_Name, split = "-"), function(i) i[2]))
+clin_genomic$Block  = unlist(lapply(strsplit(clin_genomic$Sample_Name, split = "-"), function(i) paste0(i[1:2], collapse = "-")))
 clin_genomic$Region = unlist(lapply(strsplit(clin_genomic$Sample_Name, split = "-"), function(i) i[3]))
 
 # Rename for legacy reasons
@@ -236,7 +249,7 @@ calls_list = lapply(1:nrow(clin_genomic), function(i) {
   # Read that file in
   calls = read.table(paste0("cna_calls/",case,"_",
                             sample,"_500kb_GRCh38_cna_calls.txt"),
-                     stringsAsFactors = F)
+                     stringsAsFactors = F, check.names = F)
   
   
 })
@@ -373,6 +386,92 @@ if(distance_params$Type=="Per_Gene") {
   per_gene_bin_indexes = getGeneBinIndex(bins_pos)
   
 }
+```
+
+Let's also make a matrix of "clonal" calls per block.
+
+```{r clonal_cn_profiles_per_block, warning=FALSE}
+# Get the codes for extraction
+block_ids = unique(paste0(clin_genomic$Patient_ID,"_",clin_genomic$Block))
+
+# Run through them and calculate clonal profile
+clonal_block_profiles = lapply(block_ids, function(bid) {
+  
+  # Find the columns
+  bcols = grep(bid, colnames(calls_mat))
+  
+  # Find the bins that disagree in at least one sample
+  subclonal = apply(cbind(calls_mat[,bcols]), 1, function(i) any(i!=i[1]))
+  
+  # Extract the patient
+  patient = strsplit(bid, split = "_")[[1]][1]
+  
+  # What's the ploidy?
+  ploidy = patient_plodies$Ploidy[patient_plodies$Case==patient]
+  
+  # The answer is taking one profile and converting all the subclonal bins to the baseline ploidy
+  clonal_profile = calls_mat[,bcols[1]]
+  
+  # Revert it
+  clonal_profile[subclonal] = ploidy
+  
+  # Make it a matrix and name it
+  clonal_profile = cbind(clonal_profile)
+  colnames(clonal_profile) = bid
+  
+  return(clonal_profile)
+  
+})
+
+# Combine
+clonal_block_profiles = do.call(cbind, clonal_block_profiles)
+
+# Add row names
+rownames(clonal_block_profiles) = rownames(calls_mat)
+
+# # Run through all comparisons
+# comparisons = combn(ncol(clonal_block_profiles), m = 2)
+
+# Make comparisons within each patient
+patient_clonal_events_comparisons = lapply(unique(clin_genomic$Patient_ID), function(p) {
+  
+  # Patient cols
+  pcols = grep(p, colnames(clonal_block_profiles))
+  
+  # Get the comparisons
+  comparisons = combn(pcols, m = 2)
+  
+  # Do the comparison
+  events = apply(comparisons, 2, function(c) {
+    events_table = getEvents(sample_1 = clonal_block_profiles[,c[1]], 
+                             sample_2 = clonal_block_profiles[,c[2]], 
+                             bin_names = rownames(calls_mat))
+    length(which(events_table$len>=10 & events_table$Change))
+  })
+  
+  # Matching indices
+  sample_1_inds = match(unlist(lapply(strsplit(colnames(clonal_block_profiles)[comparisons[1,]], split = "_"), 
+                                      function(i) i[2])), clin_genomic$Block)
+  sample_2_inds = match(unlist(lapply(strsplit(colnames(clonal_block_profiles)[comparisons[2,]], split = "_"), 
+                                      function(i) i[2])), clin_genomic$Block)
+  
+  # Make a table of the comparisons
+  res = data.frame(Patient = p, 
+                   Sample_1 = colnames(clonal_block_profiles)[comparisons[1,]],
+                   Sample_2 = colnames(clonal_block_profiles)[comparisons[2,]],
+                   Organ_1  = clin_genomic$Organ[sample_1_inds],
+                   Organ_2  = clin_genomic$Organ[sample_2_inds],
+                   Desc_1   = clin_genomic$Organ_description[sample_1_inds],
+                   Desc_2   = clin_genomic$Organ_description[sample_2_inds],
+                   TP_1     = clin_genomic$Time_point[sample_1_inds],
+                   TP_2     = clin_genomic$Time_point[sample_2_inds],
+                   Events = events,
+                   stringsAsFactors = F)
+  
+  return(res)
+  
+})
+names(patient_clonal_events_comparisons) = unique(clin_genomic$Patient_ID)
 ```
 
 Here is a histogram of the number of timepoints we took.
@@ -518,6 +617,15 @@ patient_dists = lapply(unique(clin_genomic$Patient_ID), function(p) {
         
         # Count the number of events, using a certain number of bins as the minimum needed to call
         d = length(which(events_table$len>=10 & events_table$Change))
+        
+      }
+      
+      if(distance_params$Type=="MEDICC2") {
+        
+        medicc2_patient = medicc2_analysis[medicc2_analysis$Patient==p,]
+        
+        # What is the MEDICC2 distance?
+        d = medicc2_patient[medicc2_patient$Sample_A==gsub(paste0(p,"_"), "", block_i) & medicc2_patient$Sample_B==gsub(paste0(p,"_"), "", block_j),"Events"]
         
       }
       
@@ -919,7 +1027,7 @@ cohort_dist_m$Ploidy = as.factor(patient_plodies$Ploidy[match(cohort_dist_m$Pati
 
 # Plot the divergence for the classifications
 ggplot(cohort_dist_m, aes(y = dist, x = Ploidy)) + 
-  ylab("Proportion of Aberrant Genome Subclonal") + 
+  ylab(y_label_distance) + 
   ggtitle("") + 
   geom_violin(aes(fill = Ploidy)) +
   scale_fill_manual(values=c("2" = "#75bbfd", 
@@ -955,7 +1063,7 @@ p_value_line_height = max(cohort_dist_m$dist)*1.1
 
 # Plot the divergence for the classifications
 ggplot(cohort_dist_m, aes(y = dist, x = WGD_patient)) + 
-  ylab("Proportion of Aberrant Genome Subclonal") + 
+  ylab(y_label_distance) + 
   xlab("") +
   scale_x_discrete(labels = c('non-WGD','Subclonal\nWGD','WGD')) +
   ggtitle("") + 
@@ -1001,7 +1109,7 @@ same_type_comparisons = cohort_dist_m[cohort_dist_m$Type_i==cohort_dist_m$Type_j
 
 # Plot the divergence for the classifications
 ggplot(same_type_comparisons, aes(y = dist, x = WGD_patient)) + 
-  ylab("Proportion of Aberrant Genome Subclonal") + 
+  ylab(y_label_distance) + 
   xlab("") +
   scale_x_discrete(labels = c('non-WGD','Subclonal\nWGD','WGD')) +
   ggtitle("") + 
@@ -1032,7 +1140,7 @@ same_block_comparisons = cohort_dist_m[cohort_dist_m$block_i==cohort_dist_m$bloc
 
 # Same block comparison per GD classification faceting mets and primaries
 ggplot(same_block_comparisons, aes(y = dist, x = WGD_patient)) + 
-  ylab("Proportion of Aberrant Genome Subclonal") + 
+  ylab(y_label_distance) + 
   xlab("") +
   scale_x_discrete(labels = c('non-WGD','Subclonal\nWGD','WGD')) +
   ggtitle("") + 
@@ -1049,13 +1157,13 @@ ggplot(same_block_comparisons, aes(y = dist, x = WGD_patient)) +
 
 # Same block comparisons based on organ
 ggplot(same_block_comparisons, aes(y = dist, x = Organ_i)) + 
-  ylab("Proportion of Aberrant Genome Subclonal") +
+  ylab(y_label_distance) +
   ggtitle("Same Block Comparisons") +
   geom_violin() + geom_boxplot(width=0.1)
 
 # Same block comparisons per GD classification not faceted
 ggplot(same_block_comparisons, aes(y = dist, x = WGD_patient)) + 
-  ylab("Proportion of Aberrant Genome Subclonal") +
+  ylab(y_label_distance) +
   ggtitle("Same Block Comparisons") +
   geom_violin() + geom_boxplot(width=0.1) + ylim(0,ceilmax(same_block_comparisons$dist))
 
@@ -1072,7 +1180,7 @@ p_value_line_height = max(cohort_dist_m$dist)*1.1
 
 # Plot the divergence for the classifications
 ggplot(cohort_dist_m, aes(y = dist, x = WGD_compare)) + 
-  ylab("Proportion of Aberrant Genome Subclonal") + 
+  ylab(y_label_distance) + 
   xlab("") +
   scale_x_discrete(labels = c('Both\nnon-WGD','non-WGD\n/ WGD','Both\nWGD')) +
   ggtitle("") + 
@@ -1106,7 +1214,7 @@ plot.df = cohort_dist_m[cohort_dist_m$Organ_i==cohort_dist_m$Organ_j & cohort_di
 # Comparisons same organ, same time point
 ggplot(plot.df, 
        aes(y = dist, x = WGD_compare)) + 
-  ylab("Proportion of Aberrant Genome Subclonal") + 
+  ylab(y_label_distance) + 
   ggtitle("Proportion subclonal same organ+timpoint comparisons") + 
   ylim(0,ceilmax(plot.df$dist)) +
   geom_boxplot() + theme(plot.title = element_text(hjust = 0.5))
@@ -1118,7 +1226,7 @@ plot.df = cohort_dist_m[cohort_dist_m$Organ_i==cohort_dist_m$Organ_j &
 # Comparisons same organ, same time point
 ggplot(plot.df, 
        aes(y = dist, x = WGD_compare)) + 
-  ylab("Proportion of Aberrant Genome Subclonal") + 
+  ylab(y_label_distance) + 
   ggtitle("Proportion subclonal same organ+timpoint+primary comparisons") + 
   ylim(0,ceilmax(plot.df$dist)) +
   geom_boxplot() + theme(plot.title = element_text(hjust = 0.5))
@@ -1130,7 +1238,7 @@ plot.df = cohort_dist_m[cohort_dist_m$Organ_i==cohort_dist_m$Organ_j &
 # Comparisons same organ, same time point
 ggplot(plot.df, 
        aes(y = dist, x = WGD_compare)) + 
-  ylab("Proportion of Aberrant Genome Subclonal") + 
+  ylab(y_label_distance) + 
   ggtitle("Proportion subclonal same organ+timpoint+metastasis comparisons") + 
   ylim(0,ceilmax(plot.df$dist)) +
   geom_boxplot() + theme(plot.title = element_text(hjust = 0.5))
@@ -1140,7 +1248,7 @@ plot.df = cohort_dist_m[abs(cohort_dist_m$TP_i-cohort_dist_m$TP_j)==1,]
 # Comparisons same organ, same time point
 ggplot(plot.df, 
        aes(y = dist, x = WGD_compare)) + 
-  ylab("Proportion of Aberrant Genome Subclonal") + 
+  ylab(y_label_distance) + 
   ggtitle("Proportion subclonal next timepoint comparisons") + 
   ylim(0,ceilmax(plot.df$dist)) +
   geom_boxplot() + theme(plot.title = element_text(hjust = 0.5))
@@ -1222,7 +1330,7 @@ ymax = ceilmax(plot.df$dist)
 
 # Do ggplot2
 ggplot(plot.df, aes(x = Month, y = dist)) + geom_violin() + 
-  ylab("Proportion of Aberrant Genome Subclonal") + xlab("Month") +
+  ylab(y_label_distance) + xlab("Month") +
   geom_jitter(width = 0.1, aes(col = Organ_i)) + ylim(-0.1,ymax) + #geom_hline(yintercept = 0.2) +
   facet_grid(. ~ Patient, scales = "free_x") + plot_theme + 
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) + labs(col = "Organ")
@@ -1268,7 +1376,7 @@ ymax = 2^ceiling(log(round(max(plot.df$dist)), base = 2))
 
 # Do ggplot2
 ggplot(plot.df, aes(x = Month, y = dist)) + geom_violin() + 
-  ylab("Proportion of Aberrant Genome Subclonal") + xlab("Month") +
+  ylab(y_label_distance) + xlab("Month") +
   geom_jitter(width = 0.1, aes(col = Organ_combination)) + ylim(-0.1,ymax) + 
   facet_grid(. ~ Patient, scales = "free_x") + plot_theme + labs(col = "Organ Comparison")
 ggsave(filename = paste0(plot_dir,
@@ -1293,7 +1401,7 @@ within_prim_mets = cohort_dist_m[cohort_dist_m$TP_i==cohort_dist_m$TP_j &
                                  cohort_dist_m$Organ_i==cohort_dist_m$Organ_j,]
 
 # Reorder those levels
-within_prim_mets$Type_i = factor(within_prim_mets$Type_i, levels(within_prim_mets$Type_i)[2:1])
+within_prim_mets$Type_i = factor(within_prim_mets$Type_i, levels = c("Primary", "Metastasis"))
 ```
 
 ### Mixed model of within organ divergence, primary and metastasis
@@ -1313,7 +1421,7 @@ p_value_line_height = max(within_prim_mets$dist)*1.1
 
 # Plot divergences in Mets and Primary
 ggplot(within_prim_mets, aes(x = Type_i, y = dist)) + geom_boxplot(outlier.shape = NA) +
-  ylab("Proportion of Aberrant Genome Subclonal") + xlab(NULL) +
+  ylab(y_label_distance) + xlab(NULL) +
   geom_jitter(width = 0.2, aes(col = Type_i, 
     shape = Organ_i), size = 3) + 
   scale_colour_manual(values=c("Primary" = "#029386", "Metastasis" = "#fc5a50")) + 
@@ -1336,12 +1444,9 @@ ggsave(filename = paste0(plot_dir,
                          seg_size_filt,"_divergences_within_organs_categorised_by_primary_metastatsis.png"), 
        width = 7, height = 8.2)
 
-# Change y-axis depending on run
-if(distance_params$Type=="Alt_Status") {y_axis_lab = "Proportion of Aberrant Genome Subclonal"} else {y_axis_lab = "Divergence"}
-
 # Plot divergences in Mets and Primary
 ggplot(within_prim_mets, aes(x = Type_i, y = dist)) + geom_boxplot(outlier.shape = NA) +
-  ylab("Proportion of Aberrant Genome Subclonal") + xlab(NULL) +
+  ylab(y_label_distance) + xlab(NULL) +
   geom_jitter(width = 0.2, aes(col = Type_i, 
     shape = Organ_i), size = 3) + 
   scale_colour_manual(values=c("Primary" = "#029386", "Metastasis" = "#fc5a50")) + 
@@ -1420,7 +1525,7 @@ comparison_organs = data.frame(cohort_dist_m, Organ_Compare = organ_comparison)
 comparison_organs = comparison_organs[comparison_organs$Organ_Compare %in% 
                                       c("Colorectal|Colorectal", "Liver|Liver", 
                                         "Colorectal|Liver"),]
-comparison_organs$Organ_Compare = droplevels(comparison_organs$Organ_Compare)
+# comparison_organs$Organ_Compare = droplevels(comparison_organs$Organ_Compare)
 
 # Here I will do an ANOVA first for divergence
 print("An ANOVA for comparing divergence in colorectal and liver organs...")
@@ -1441,12 +1546,12 @@ summary(aov(pdiff ~ Organ_Compare, comparison_organs))
 
 # Make a ggplot
 ggplot(comparison_organs, aes(x = Organ_Compare, y = dist)) + geom_boxplot(outlier.shape = NA) + 
-  ylab("Proportion of Aberrant Genome Subclonal") + xlab("") +
+  ylab(y_label_distance) + xlab("") +
   geom_jitter(width = 0.2, aes(col = Organ_Compare), size = 3) + 
   scale_colour_manual(values=c("Colorectal|Colorectal" = "#5ca904", 
                                "Colorectal|Liver" = "#fec615", 
                                "Liver|Liver" = "#fc5a50")) + 
-  ylim(-0.1,1) + 
+  ylim(-0.1,ceilmax(comparison_organs$dist)*1.1) + 
   geom_segment(aes(x = p_value_coord$V1[1], y = ceilmax(comparison_organs$dist)*0.85, 
                    xend = p_value_coord$V2[1], yend = ceilmax(comparison_organs$dist)*0.85)) +
   annotate("text", label = paste0("p=",signif(p_value_coord$p_val_adj[1], digits = 2)), x = 1.5, y = ceilmax(comparison_organs$dist)*(0.85 + 0.03), size = 4) +
@@ -1493,8 +1598,8 @@ p_value_same_tp = signif(summary(res2b)$coefficients["Same_tpTRUE","Pr(>|t|)"], 
 p_value_line_height = max(within_tps_across_tps$dist)*1.1
 
 # Make a ggplot
-ggplot(within_tps_across_tps, aes(x = Same_tp, y = dist)) + geom_boxplot() + 
-  ylab("Proportion of Aberrant Genome Subclonal") + xlab("Same timepoint") +
+ggplot(within_tps_across_tps, aes(x = Same_tp, y = dist)) + geom_boxplot(outlier.shape = NA) + 
+  ylab(y_label_distance) + xlab("Same timepoint") +
   geom_jitter(width = 0.1, aes(col = Same_tp)) + 
   scale_colour_manual(values=c("FALSE" = "#03719c", "TRUE" = "#fc5a50")) + 
   ylim(-0.1,max(1, p_value_line_height + 0.075)) + plot_theme + 
@@ -1675,7 +1780,7 @@ ymax = ceilmax(patient_dists_next_tp$dist)
 
 # Do ggplot2
 ggplot(patient_dists_next_tp, aes(x = Month_annotation, y = dist)) + geom_violin() + 
-  ylab("Proportion of Aberrant Genome Subclonal") + xlab("Timepoint comparison") +
+  ylab(y_label_distance) + xlab("Timepoint comparison") +
   geom_jitter(width = 0.1, aes(col = Treatment_prior_recent_tp)) + ylim(-0.1,ymax) + 
   facet_grid(. ~ Patient, scales = "free_x", space = "free_x") + plot_theme + 
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) + labs(col = "Treatment in interval")
@@ -1764,7 +1869,7 @@ ggplot(patient_dists_next_tp, aes(x = Difference_time, y = dist,
                                   col = Treatment_prior_recent_tp)) + geom_point() +
   scale_colour_manual(values = c("All" = "Black", "TRUE" = "#fc5a50", "FALSE" = "#03719c")) +
   xlab("Length of Interval (Days)") + 
-  ylab("Proportion of Aberrant Genome Subclonal") + 
+  ylab(y_label_distance) + 
   guides(col=guide_legend(title="Treated in interval")) + plot_theme + 
   geom_line(data = lin_data) + 
   annotate("text", label = paste0("All: m=",lm_all["Gradient"],", c=",lm_all["Intercept"],", p=",lm_all["p"]), 
@@ -1801,7 +1906,7 @@ p_value_line_height = max(patient_dists_next_tp$dist)*1.1
 
 # Do ggplot2
 ggplot(patient_dists_next_tp, aes(x = Treatment_name, y = dist)) + geom_boxplot(outlier.shape = NA) + 
-  ylab("Proportion of Aberrant Genome Subclonal") +
+  ylab(y_label_distance) +
   geom_jitter(width = 0.2, aes(col = Patient), 
               size = 3) + ylim(-0.1,max(1, p_value_line_height + 0.075)) + 
   xlab(NULL) +
@@ -1817,7 +1922,7 @@ ggsave(filename = paste0(plot_dir,
 
 # Do ggplot2
 ggplot(patient_dists_next_tp, aes(x = Treatment_name, y = dist)) + geom_boxplot(outlier.shape = NA) + 
-  ylab("Proportion of Aberrant Genome Subclonal") +
+  ylab(y_label_distance) +
   geom_jitter(width = 0.1, aes(col = Treatment_name), 
               size = 3) + 
   scale_colour_manual(values=c("No Treatment" = "#658b38", "Treated" = "#0485d1")) +
@@ -2260,5 +2365,7 @@ Also let's output the PGA data etc and the classifications.
 write.table(patient_pgas, 
             file = paste0(plot_dir,cna_selection,"_",seg_size_filt,"_LM_cohort_per_sample_classification_data.csv"),
             quote = F, row.names = F, sep = ",")
+
+saveRDS(sessionInfo(), file = "session_info.rds")
 ```
 
